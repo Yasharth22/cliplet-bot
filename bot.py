@@ -116,6 +116,56 @@ async def on_ready():
 
 # ===== COMMANDS =====
 
+@tree.command(name="user_log", description="View a user's submissions (MOD ONLY)")
+async def user_log(interaction: discord.Interaction, member: discord.Member):
+
+    MOD_ROLE_ID = 1491424019877200013  # 🔥 replace with your role ID
+
+    # ✅ Check role by ID
+    if not any(role.id == MOD_ROLE_ID for role in interaction.user.roles):
+        await interaction.response.send_message("❌ You are not a MOD", ephemeral=True)
+        return
+
+    user_id = str(member.id)
+
+    # 🔍 Get linked channel
+    cursor.execute(
+        "SELECT channel_name FROM users WHERE user_id=%s",
+        (user_id,)
+    )
+    user = cursor.fetchone()
+
+    if not user:
+        await interaction.response.send_message("❌ User not linked", ephemeral=True)
+        return
+
+    channel_name = user[0]
+
+    # 📊 Get submissions
+    cursor.execute(
+        "SELECT link, views, likes FROM submissions WHERE user_id=%s",
+        (user_id,)
+    )
+    rows = cursor.fetchall()
+
+    if not rows:
+        await interaction.response.send_message("❌ No submissions", ephemeral=True)
+        return
+
+    total_views = sum(r[1] for r in rows)
+    total_likes = sum(r[2] for r in rows)
+
+    msg = f"📊 **{member.name}'s Stats**\n"
+    msg += f"📢 Channel: {channel_name}\n\n"
+
+    for link, views, likes in rows:
+        msg += f"🔗 {link}\n👁 {views:,} | ❤️ {likes:,}\n\n"
+
+    msg += f"🔥 TOTAL VIEWS: {total_views:,}\n"
+    msg += f"❤️ TOTAL LIKES: {total_likes:,}"
+
+    await interaction.response.send_message(msg)
+
 @tree.command(name="link_youtube", description="Link your YouTube channel")
 async def link_youtube(interaction: discord.Interaction, channel_url: str):
 

@@ -22,28 +22,6 @@ youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
 conn = psycopg2.connect(DATABASE_URL)
 cursor = conn.cursor()
 
-# 🧹 Remove duplicate submissions (keep first one)
-cursor.execute("""
-DELETE FROM submissions
-WHERE id NOT IN (
-    SELECT MIN(id)
-    FROM submissions
-    GROUP BY video_id
-);
-""")
-conn.commit()
-
-print("✅ Duplicates cleaned")
-
-try:
-    cursor.execute("""
-    ALTER TABLE submissions 
-    ADD CONSTRAINT unique_video UNIQUE (video_id);
-    """)
-    conn.commit()
-    print("✅ UNIQUE constraint added")
-except Exception as e:
-    print("⚠️ Constraint already exists or error:", e)
 
 # CREATE TABLES
 cursor.execute("""

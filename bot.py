@@ -22,8 +22,7 @@ youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
 conn = psycopg2.connect(DATABASE_URL)
 cursor = conn.cursor()
 
-
-# CREATE TABLES
+# ===== TABLES =====
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
@@ -50,23 +49,15 @@ CREATE TABLE IF NOT EXISTS submissions (
 conn.commit()
 
 # ===== HELPERS =====
-
 def extract_video_id(url):
     match = re.search(r"(?:v=|shorts/|youtu\.be/)([0-9A-Za-z_-]{11})", url)
     return match.group(1) if match else None
 
-
 def get_video_stats(video_id):
-    res = youtube.videos().list(
-        part="snippet,statistics",
-        id=video_id
-    ).execute()
-
+    res = youtube.videos().list(part="snippet,statistics", id=video_id).execute()
     if not res["items"]:
         return None
-
     return res["items"][0]
-
 
 def get_channel_id_from_url(url):
     try:
@@ -74,29 +65,17 @@ def get_channel_id_from_url(url):
 
         if "@" in url:
             handle = url.split("@")[1]
-
-            res = youtube.channels().list(
-                part="snippet",
-                forHandle=handle
-            ).execute()
-
+            res = youtube.channels().list(part="snippet", forHandle=handle).execute()
             if not res["items"]:
                 return None, None
-
             channel = res["items"][0]
             return channel["id"], channel["snippet"]["title"]
 
         if "channel/" in url:
             channel_id = url.split("channel/")[1]
-
-            res = youtube.channels().list(
-                part="snippet",
-                id=channel_id
-            ).execute()
-
+            res = youtube.channels().list(part="snippet", id=channel_id).execute()
             if not res["items"]:
                 return None, None
-
             return channel_id, res["items"][0]["snippet"]["title"]
 
         return None, None
@@ -105,81 +84,76 @@ def get_channel_id_from_url(url):
         print("Channel fetch error:", e)
         return None, None
 
-
 # ===== EVENTS =====
-
 @bot.event
 async def on_ready():
     await tree.sync()
     auto_refresh.start()
     print(f"✅ Logged in as {bot.user}")
 
-
 # ===== COMMANDS =====
 
+# 👮 MOD LOG
 @tree.command(name="user_log", description="View a user's submissions (MOD ONLY)")
 async def user_log(interaction: discord.Interaction, member: discord.Member):
 
-    MOD_ROLE_ID = 1491424019877200013  # 🔥 replace with your role ID
+    MOD_ROLE_ID = 1491424019877200013
 
-    # ✅ Check role by ID
     if not any(role.id == MOD_ROLE_ID for role in interaction.user.roles):
-        await interaction.response.send_message("❌ You are not a MOD", ephemeral=True)
+        await interaction.response.send_message(
+            embed=discord.Embed(description="❌ You are not a MOD", color=discord.Color.red()),
+            ephemeral=True
+        )
         return
 
-    user_id = str(member.id)
-
-    # 🔍 Get linked channel
-    cursor.execute(
-        "SELECT channel_name FROM users WHERE user_id=%s",
-        (user_id,)
-    )
-    user = cursor.fetchone()
-
-    if not user:
-        await interaction.response.send_message("❌ User not linked", ephemeral=True)
-        return
-
-    channel_name = user[0]
-
-    # 📊 Get submissions
-    cursor.execute(
-        "SELECT link, views, likes FROM submissions WHERE user_id=%s",
-        (user_id,)
-    )
+    cursor.execute("SELECT link, views, likes FROM submissions WHERE user_id=%s", (str(member.id),))
     rows = cursor.fetchall()
 
     if not rows:
-        await interaction.response.send_message("❌ No submissions", ephemeral=True)
+        await interaction.response.send_message(
+            embed=discord.Embed(description="❌ No submissions", color=discord.Color.red()),
+            ephemeral=True
+        )
         return
 
-    total_views = sum(r[1] for r in rows)
-    total_likes = sum(r[2] for r in rows)
+    embed = discord.Embed(title=f"📊 {member.name}'s Stats", color=discord.Color.blue())
 
-    msg = f"📊 **{member.name}'s Stats**\n"
-    msg += f"📢 Channel: {channel_name}\n\n"
+    total_views = 0
+    total_likes = 0
 
     for link, views, likes in rows:
-        msg += f"🔗 {link}\n👁 {views:,} | ❤️ {likes:,}\n\n"
+        embed.add_field(name="🔗 Video", value=f"{link}\n👁 {views:,} | ❤️ {likes:,}", inline=False)
+        total_views += views
+        total_likes += likes
 
-    msg += f"🔥 TOTAL VIEWS: {total_views:,}\n"
-    msg += f"❤️ TOTAL LIKES: {total_likes:,}"
+    embed.add_field(name="🔥 TOTAL", value=f"👁 {total_views:,} | ❤️ {total_likes:,}", inline=False)
 
-    await interaction.response.send_message(msg)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
+# 🔗 LINK YOUTUBE
 @tree.command(name="link_youtube", description="Link your YouTube channel")
 async def link_youtube(interaction: discord.Interaction, channel_url: str):
 
-    await interaction.response.defer()
+    await interaction.response.defer(ephemeral=True)
 
     channel_id, channel_name = get_channel_id_from_url(channel_url)
 
     if not channel_id:
-        await interaction.followup.send("❌ Invalid channel link")
+        await interaction.followup.send(
+            embed=discord.Embed(description="❌ Invalid channel link", color=discord.Color.red()),
+            ephemeral=True
+        )
         return
 
-    # remove old
-    cursor.execute("DELETE FROM users WHERE user_id=%s", (str(interaction.user.id),))
+    cursor.execute("SELECT COUNT(*) FROM users WHERE user_id=%s", (str(interaction.user.id),))
+    count = cursor.fetchone()[0]
+
+    if count >= 2:
+        await interaction.followup.send(
+            embed=discord.Embed(description="❌ You can only link 2 channels", color=discord.Color.red()),
+            ephemeral=True
+        )
+        return
 
     cursor.execute(
         "INSERT INTO users (user_id, channel_id, channel_name) VALUES (%s, %s, %s)",
@@ -187,24 +161,27 @@ async def link_youtube(interaction: discord.Interaction, channel_url: str):
     )
     conn.commit()
 
-    await interaction.followup.send(f"✅ Linked YouTube: {channel_name}")
+    await interaction.followup.send(
+        embed=discord.Embed(description=f"✅ Linked: {channel_name}", color=discord.Color.green()),
+        ephemeral=True
+    )
 
-
+# 🎬 SUBMIT
 @tree.command(name="submit", description="Submit your YouTube video")
 async def submit(interaction: discord.Interaction, url: str):
 
-    await interaction.response.defer()
+    await interaction.response.defer(ephemeral=True)
 
     try:
         video_id = extract_video_id(url)
 
         if not video_id:
-            await interaction.followup.send("❌ Invalid YouTube link")
+            await interaction.followup.send(embed=discord.Embed(description="❌ Invalid YouTube link", color=discord.Color.red()), ephemeral=True)
             return
 
         data = get_video_stats(video_id)
         if not data:
-            await interaction.followup.send("❌ Failed to fetch video")
+            await interaction.followup.send(embed=discord.Embed(description="❌ Failed to fetch video", color=discord.Color.red()), ephemeral=True)
             return
 
         video_channel_id = data['snippet']['channelId']
@@ -212,84 +189,79 @@ async def submit(interaction: discord.Interaction, url: str):
         views = int(data['statistics'].get('viewCount', 0))
         likes = int(data['statistics'].get('likeCount', 0))
 
-        # 🔹 Get ALL linked channels (supports future 2 channels)
-        cursor.execute(
-            "SELECT channel_id FROM users WHERE user_id=%s",
-            (str(interaction.user.id),)
-        )
+        cursor.execute("SELECT channel_id FROM users WHERE user_id=%s", (str(interaction.user.id),))
         results = cursor.fetchall()
 
         if not results:
-            await interaction.followup.send("❌ Link your YouTube first")
+            await interaction.followup.send(embed=discord.Embed(description="❌ Link your YouTube first", color=discord.Color.red()), ephemeral=True)
             return
 
         linked_channels = [row[0] for row in results]
 
-        # 🔹 Check if video belongs to any linked channel
         if video_channel_id not in linked_channels:
-            await interaction.followup.send("❌ Not your channel")
+            await interaction.followup.send(embed=discord.Embed(description="❌ Not your channel", color=discord.Color.red()), ephemeral=True)
             return
 
-        # 🔹 Duplicate check (fast + safe)
-        cursor.execute(
-            "SELECT 1 FROM submissions WHERE video_id=%s",
-            (video_id,)
-        )
-
+        cursor.execute("SELECT 1 FROM submissions WHERE video_id=%s", (video_id,))
         if cursor.fetchone():
-            await interaction.followup.send("❌ This video is already submitted")
+            await interaction.followup.send(embed=discord.Embed(description="❌ Already submitted", color=discord.Color.red()), ephemeral=True)
             return
 
-        # 🔹 Insert submission
         cursor.execute(
-            """
-            INSERT INTO submissions 
-            (user_id, video_id, link, channel_name, views, likes) 
-            VALUES (%s, %s, %s, %s, %s, %s)
-            """,
+            "INSERT INTO submissions (user_id, video_id, link, channel_name, views, likes) VALUES (%s, %s, %s, %s, %s, %s)",
             (str(interaction.user.id), video_id, url, channel_name, views, likes)
         )
-
         conn.commit()
 
-        await interaction.followup.send(
-            f"📺 Video Added\n👁 {views:,} | ❤️ {likes:,}"
-        )
+        embed = discord.Embed(title="📺 Video Added", color=discord.Color.green())
+        embed.add_field(name="Channel", value=channel_name)
+        embed.add_field(name="👁 Views", value=f"{views:,}")
+        embed.add_field(name="❤️ Likes", value=f"{likes:,}")
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     except Exception as e:
-        conn.rollback()  # 🔥 CRITICAL FIX
-
+        conn.rollback()
         print("ERROR:", e)
 
-        # 🔹 Handle duplicate DB constraint also (extra safety)
-        if "duplicate key" in str(e) or "unique_video" in str(e):
-            await interaction.followup.send("❌ This video is already submitted")
-        else:
-            await interaction.followup.send("❌ Something went wrong")
-            
-@tree.command(name="stats", description="Your total stats")
+        await interaction.followup.send(
+            embed=discord.Embed(description="❌ Something went wrong", color=discord.Color.red()),
+            ephemeral=True
+        )
+
+# 📊 STATS
+@tree.command(name="stats", description="Your stats")
 async def stats(interaction: discord.Interaction):
 
-    cursor.execute(
-        "SELECT views, likes FROM submissions WHERE user_id=%s",
-        (str(interaction.user.id),)
-    )
+    cursor.execute("""
+    SELECT channel_name, SUM(views), SUM(likes)
+    FROM submissions
+    WHERE user_id=%s
+    GROUP BY channel_name
+    """, (str(interaction.user.id),))
+
     rows = cursor.fetchall()
 
     if not rows:
-        await interaction.response.send_message("❌ No data")
+        await interaction.response.send_message(
+            embed=discord.Embed(description="❌ No data", color=discord.Color.red()),
+            ephemeral=True
+        )
         return
 
-    total_views = sum(r[0] for r in rows)
-    total_likes = sum(r[1] for r in rows)
+    cursor.execute("SELECT SUM(views), SUM(likes) FROM submissions WHERE user_id=%s", (str(interaction.user.id),))
+    total = cursor.fetchone()
 
-    embed = discord.Embed(title="📊 Your Stats", color=discord.Color.red())
-    embed.add_field(name="👁 Views", value=f"{total_views:,}")
-    embed.add_field(name="❤️ Likes", value=f"{total_likes:,}")
+    embed = discord.Embed(title="📊 Your Stats", color=discord.Color.blue())
 
-    await interaction.response.send_message(embed=embed)
+    for name, views, likes in rows:
+        embed.add_field(name=f"📢 {name}", value=f"👁 {views:,} | ❤️ {likes:,}", inline=False)
 
+    embed.add_field(name="🔥 TOTAL", value=f"👁 {total[0]:,} | ❤️ {total[1]:,}", inline=False)
 
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# ===== AUTO REFRESH =====
 @tasks.loop(hours=1)
 async def auto_refresh():
     print("🔄 Auto refreshing...")
@@ -311,6 +283,5 @@ async def auto_refresh():
         )
 
     conn.commit()
-
 
 bot.run(TOKEN)

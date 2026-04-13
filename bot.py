@@ -228,6 +228,16 @@ async def submit(interaction: discord.Interaction, url: str):
             await interaction.followup.send("❌ Not your channel")
             return
 
+        # ✅ DUPLICATE CHECK (ADD THIS)
+        cursor.execute(
+            "SELECT 1 FROM submissions WHERE video_id=%s",
+            (video_id,)
+        )
+
+        if cursor.fetchone():
+            await interaction.followup.send("❌ This video is already submitted")
+            return
+
         cursor.execute(
             "INSERT INTO submissions (user_id, video_id, link, channel_name, views, likes) VALUES (%s, %s, %s, %s, %s, %s)",
             (str(interaction.user.id), video_id, url, channel_name, views, likes)

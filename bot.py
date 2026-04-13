@@ -212,23 +212,25 @@ async def submit(interaction: discord.Interaction, url: str):
         views = int(data['statistics'].get('viewCount', 0))
         likes = int(data['statistics'].get('likeCount', 0))
 
+        # 🔹 Get ALL linked channels (supports future 2 channels)
         cursor.execute(
             "SELECT channel_id FROM users WHERE user_id=%s",
             (str(interaction.user.id),)
         )
-        result = cursor.fetchone()
+        results = cursor.fetchall()
 
-        if not result:
+        if not results:
             await interaction.followup.send("❌ Link your YouTube first")
             return
 
-        linked_channel_id = result[0]
+        linked_channels = [row[0] for row in results]
 
-        if video_channel_id != linked_channel_id:
+        # 🔹 Check if video belongs to any linked channel
+        if video_channel_id not in linked_channels:
             await interaction.followup.send("❌ Not your channel")
             return
 
-        # ✅ DUPLICATE CHECK (ADD THIS)
+        # 🔹 Duplicate check (fast + safe)
         cursor.execute(
             "SELECT 1 FROM submissions WHERE video_id=%s",
             (video_id,)
@@ -238,10 +240,16 @@ async def submit(interaction: discord.Interaction, url: str):
             await interaction.followup.send("❌ This video is already submitted")
             return
 
+        # 🔹 Insert submission
         cursor.execute(
-            "INSERT INTO submissions (user_id, video_id, link, channel_name, views, likes) VALUES (%s, %s, %s, %s, %s, %s)",
+            """
+            INSERT INTO submissions 
+            (user_id, video_id, link, channel_name, views, likes) 
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
             (str(interaction.user.id), video_id, url, channel_name, views, likes)
         )
+
         conn.commit()
 
         await interaction.followup.send(
@@ -249,10 +257,16 @@ async def submit(interaction: discord.Interaction, url: str):
         )
 
     except Exception as e:
+        conn.rollback()  # 🔥 CRITICAL FIX
+
         print("ERROR:", e)
-        await interaction.followup.send("❌ Something went wrong")
 
-
+        # 🔹 Handle duplicate DB constraint also (extra safety)
+        if "duplicate key" in str(e) or "unique_video" in str(e):
+            await interaction.followup.send("❌ This video is already submitted")
+        else:
+            await interaction.followup.send("❌ Something went wrong")
+            
 @tree.command(name="stats", description="Your total stats")
 async def stats(interaction: discord.Interaction):
 

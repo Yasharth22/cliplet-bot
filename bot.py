@@ -10,6 +10,7 @@ from googleapiclient.discovery import build
 TOKEN = os.getenv("TOKEN")
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
+MOD_CHANNEL_ID = int(os.getenv("MOD_CHANNEL_ID", 0))
 
 # ===== BOT =====
 intents = discord.Intents.default()
@@ -93,7 +94,7 @@ async def on_ready():
 
 # ===== COMMANDS =====
 
-# 👮 MOD LOG
+# 👮 USER LOG (FILE EXPORT)
 @tree.command(name="user_log", description="View a user's submissions (MOD ONLY)")
 async def user_log(interaction: discord.Interaction, member: discord.Member):
 
@@ -106,31 +107,55 @@ async def user_log(interaction: discord.Interaction, member: discord.Member):
         )
         return
 
-    cursor.execute("SELECT link, views, likes FROM submissions WHERE user_id=%s", (str(member.id),))
-    rows = cursor.fetchall()
+    user_id = str(member.id)
 
-    if not rows:
+    cursor.execute("SELECT channel_id, channel_name FROM users WHERE user_id=%s", (user_id,))
+    channels = cursor.fetchall()
+
+    if not channels:
         await interaction.response.send_message(
-            embed=discord.Embed(description="❌ No submissions", color=discord.Color.red()),
+            embed=discord.Embed(description="❌ No linked channels", color=discord.Color.red()),
             ephemeral=True
         )
         return
 
-    embed = discord.Embed(title=f"📊 {member.name}'s Stats", color=discord.Color.blue())
+    content = f"USER REPORT\nUser: {member.name}\n\n"
 
     total_views = 0
     total_likes = 0
 
-    for link, views, likes in rows:
-        embed.add_field(name="🔗 Video", value=f"{link}\n👁 {views:,} | ❤️ {likes:,}", inline=False)
-        total_views += views
-        total_likes += likes
+    for idx, (channel_id, channel_name) in enumerate(channels, start=1):
 
-    embed.add_field(name="🔥 TOTAL", value=f"👁 {total_views:,} | ❤️ {total_likes:,}", inline=False)
+        content += f"====================\nCHANNEL {idx}\n====================\n"
+        content += f"Name: {channel_name}\nID: {channel_id}\n\n"
 
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+        cursor.execute(
+            "SELECT link, views, likes FROM submissions WHERE user_id=%s AND channel_name=%s",
+            (user_id, channel_name)
+        )
+        videos = cursor.fetchall()
 
-# 🔗 LINK YOUTUBE
+        ch_views = 0
+        ch_likes = 0
+
+        for i, (link, views, likes) in enumerate(videos, start=1):
+            content += f"{i}.\n{link}\nViews: {views}\nLikes: {likes}\n\n"
+            ch_views += views
+            ch_likes += likes
+
+        content += f"Channel Total Views: {ch_views}\nChannel Total Likes: {ch_likes}\n\n"
+
+        total_views += ch_views
+        total_likes += ch_likes
+
+    content += f"====================\nOVERALL\n====================\n"
+    content += f"Total Views: {total_views}\nTotal Likes: {total_likes}"
+
+    file = discord.File(fp=bytes(content, "utf-8"), filename=f"{member.name}_log.txt")
+
+    await interaction.response.send_message(file=file, ephemeral=True)
+
+# 🔗 LINK YOUTUBE (WITH PROTECTION)
 @tree.command(name="link_youtube", description="Link your YouTube channel")
 async def link_youtube(interaction: discord.Interaction, channel_url: str):
 
@@ -145,6 +170,18 @@ async def link_youtube(interaction: discord.Interaction, channel_url: str):
         )
         return
 
+    # 🚫 Prevent duplicate linking across users
+    cursor.execute("SELECT user_id FROM users WHERE channel_id=%s", (channel_id,))
+    existing = cursor.fetchone()
+
+    if existing and existing[0] != str(interaction.user.id):
+        await interaction.followup.send(
+            embed=discord.Embed(description="❌ This channel is already linked to another user", color=discord.Color.red()),
+            ephemeral=True
+        )
+        return
+
+    # Limit 2
     cursor.execute("SELECT COUNT(*) FROM users WHERE user_id=%s", (str(interaction.user.id),))
     count = cursor.fetchone()[0]
 
@@ -166,7 +203,7 @@ async def link_youtube(interaction: discord.Interaction, channel_url: str):
         ephemeral=True
     )
 
-# 🎬 SUBMIT
+# 🎬 SUBMIT (UNCHANGED CORE + SAFE)
 @tree.command(name="submit", description="Submit your YouTube video")
 async def submit(interaction: discord.Interaction, url: str):
 
@@ -229,7 +266,7 @@ async def submit(interaction: discord.Interaction, url: str):
             ephemeral=True
         )
 
-# 📊 STATS
+# 📊 STATS (UNCHANGED)
 @tree.command(name="stats", description="Your stats")
 async def stats(interaction: discord.Interaction):
 
@@ -261,25 +298,45 @@ async def stats(interaction: discord.Interaction):
 
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# ===== AUTO REFRESH =====
+# 🔄 AUTO REFRESH + ANTI CHEAT
 @tasks.loop(hours=1)
 async def auto_refresh():
     print("🔄 Auto refreshing...")
 
-    cursor.execute("SELECT video_id FROM submissions")
+    cursor.execute("SELECT video_id, views, likes, user_id, link FROM submissions")
     videos = cursor.fetchall()
 
-    for (video_id,) in videos:
+    for video_id, old_views, old_likes, user_id, link in videos:
         data = get_video_stats(video_id)
         if not data:
             continue
 
-        views = int(data['statistics'].get('viewCount', 0))
-        likes = int(data['statistics'].get('likeCount', 0))
+        new_views = int(data['statistics'].get('viewCount', 0))
+        new_likes = int(data['statistics'].get('likeCount', 0))
+
+        flag = False
+        reason = []
+
+        if new_views - old_views > 100000:
+            flag = True
+            reason.append("Massive view spike")
+
+        if new_views > 0 and (new_likes / new_views) < 0.01:
+            flag = True
+            reason.append("Low like ratio")
+
+        if flag and MOD_CHANNEL_ID:
+            channel = bot.get_channel(MOD_CHANNEL_ID)
+            if channel:
+                embed = discord.Embed(title="🚨 Suspicious Activity", color=discord.Color.red())
+                embed.add_field(name="User", value=user_id)
+                embed.add_field(name="Video", value=link, inline=False)
+                embed.add_field(name="Reason", value="\n".join(reason), inline=False)
+                await channel.send(embed=embed)
 
         cursor.execute(
             "UPDATE submissions SET views=%s, likes=%s WHERE video_id=%s",
-            (views, likes, video_id)
+            (new_views, new_likes, video_id)
         )
 
     conn.commit()
